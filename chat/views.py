@@ -1,0 +1,109 @@
+from rest_framework import  generics, permissions, serializers, status
+from  django.contrib. auth.models import User
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from .models import *
+from django.shortcuts import get_list_or_404
+from .serializers import *
+from rest_framework. exceptions import PermissionDenied
+
+
+class CreateUserView(generics.CreateAPIView):
+    queryset =User.objects.all()
+    serializer_class = UserSerializer\
+    
+
+class UserListView(generics.ListAPIView):
+    queryset = User.objects.all()
+    serializer_class = UserSerializer
+    permission_classes = [IsAuthenticated]
+
+
+class ConversationListCreateView(generics.ListCreateAPIView):
+    serializer_class = ConversationSerializer
+    permission_classes = [IsAuthenticated]
+
+
+    def get_queryset(self):
+        return (Conversation.objects.filter(participants= self.request.user).Prefetch_related('participants'))
+    
+    def create(self, request, **kwargs):
+        participant_data = request.data.get('participants',[])
+
+        if len (participant_data) != 2:
+            return Response(
+                {'error': 'A conversation needs exactly two participants.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if str(request.user.id) not in map(str, participant_data):
+            return Response(
+                {
+                    'error ': 'You are not a participant of this conversation'
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+        users =User.objects.filter(id__in=participant_data)
+        if users.count() !=2:
+            return Response(
+                {'erroe': 'A conversation needs exactily two participants'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        existing_conversation = Conversation.objects.filter(participant_id =participant_data[0]).filter(
+            participant_id = participant_data[0]
+        ).filter(
+            participant_id = participant_data[1]
+
+        ).distinct()
+
+
+        if existing_conversation.exists():
+             return Response(
+                {
+                    'error ': 'A conversation alreday exists between these participants'},
+                    status=status.HTTP_400_BAD_REQUEST
+
+             )  
+        conversation = Conversation.objects.create()
+        conversation.participants.set(users)
+
+        serializers = self.get_serializer(conversation)
+        return Response(serializers.data, status=status.HTTP_201_CREATED)
+
+
+class MessageListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+
+
+    def get_queryset(self):
+        conversation_id = self.kwargs['conversation_id']
+        conversation = self.get_conversation(conversation_id)
+
+        return conversation.messages.order_by('timestamp')
+    
+    def perform_create(self, serializer):
+        print ("incoming conversation", self.request.data)
+        conversation_id = self['conversation_id']
+        conversation = self.get_conversation(conversation_id)
+        
+        serializer.save (sender = self.request.user, conversation=conversation)
+
+    def get_conversation(self, conversation_id):
+        conversation = get_list_or_404(Conversation, id=conversation_id)
+        if self.request.user not in conversation.participants.all():
+            raise PermissionDenied("you are not a participant of this conversation")
+        return conversation
+    
+
+class MessageRetrieveDestroyView(generics.RetrieveDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = MessageSerializer
+
+    def get_queryset(self):
+        conversation_id = self.kwargs['conversation_id']
+        return Message.objects.filter(conversation_id = conversation_id)
+    
+    def perform_destroy(self, instance):
+        if instance.sender != self.request.user:
+            raise PermissionDenied("you are not the sender of this message")
+        instance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
